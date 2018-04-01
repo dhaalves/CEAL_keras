@@ -1,13 +1,17 @@
 ## Information
 Cost-Effective Active Learning (CEAL) for Deep Image Classification Implementation with keras
+
 Model - Resnet18v2
+
 Dataset - Cifar10
 
 ## Running
 ```sh
 python CEAL_keras.py
 ```
+
 ### Parameters
+```sh
   -h, --help            show this help message and exit
   -verbose VERBOSE      Verbosity mode. 0 = silent, 1 = progress bar, 2 = one
                         line per epoch. default: 0
@@ -34,3 +38,4 @@ python CEAL_keras.py
   -ce COST_EFFECTIVE, --cost_effective COST_EFFECTIVE
                         whether to use Cost Effective high confidence sample
                         pseudo-labeling. default: True
+```
