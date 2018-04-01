@@ -52,11 +52,11 @@ def initialization():
 def least_confidence(y_pred_prob, n_samples):
     origin_index = np.arange(0, len(y_pred_prob))
     max_prob = np.max(y_pred_prob, axis=1)
-    max_prob_index = np.argmax(y_pred_prob, axis=1)
+    pred_label = np.argmax(y_pred_prob, axis=1)
 
     lci = np.column_stack((origin_index,
                            max_prob,
-                           max_prob_index))
+                           pred_label))
     lci = lci[lci[:, 1].argsort()]
     return lci[:n_samples], lci[:, 0].astype(int)[:n_samples]
 
@@ -65,19 +65,13 @@ def least_confidence(y_pred_prob, n_samples):
 # Rank all the unlabeled samples in an ascending order according to the margin sampling
 def margin_sampling(y_pred_prob, n_samples):
     origin_index = np.arange(0, len(y_pred_prob))
-    max_prob = np.max(y_pred_prob, axis=1)
-    max_prob_index = np.argmax(y_pred_prob, axis=1)
-
+    margim_sampling = np.diff(-np.sort(y_pred_prob)[:, ::-1][:, :2])
+    pred_label = np.argmax(y_pred_prob, axis=1)
     msi = np.column_stack((origin_index,
-                           max_prob,
-                           max_prob_index))
-
-    for row in y_pred_prob:
-        #         a = heapq.nlargest(2, range(len(row)), row.take)
-        a = row.argsort()[-2:][::-1]
-        b = np.take(row, a)
-    #
-    return np.sort(np.amax(y_pred_prob, axis=1))
+                           margim_sampling,
+                           pred_label))
+    msi = msi[msi[:, 1].argsort()]
+    return msi[:n_samples], msi[:, 0].astype(int)[:n_samples]
 
 
 # Rank all the unlabeled samples in an descending order according to their entropy
@@ -85,13 +79,11 @@ def entropy(y_pred_prob, n_samples):
     # entropy = stats.entropy(y_pred_prob.T)
     # entropy = np.nan_to_num(entropy)
     origin_index = np.arange(0, len(y_pred_prob))
-    max_prob = np.max(y_pred_prob, axis=1)
-    max_prob_index = np.argmax(y_pred_prob, axis=1)
     entropy = -np.nansum(np.multiply(y_pred_prob, np.log(y_pred_prob)), axis=1)
+    pred_label = np.argmax(y_pred_prob, axis=1)
     eni = np.column_stack((origin_index,
                            entropy,
-                           max_prob,
-                           max_prob_index))
+                           pred_label))
 
     eni = eni[(-eni[:, 1]).argsort()]
     return eni[:n_samples], eni[:, 0].astype(int)[:n_samples]
@@ -100,7 +92,7 @@ def entropy(y_pred_prob, n_samples):
 def get_high_confidence_samples(y_pred_prob, delta):
     eni, eni_idx = entropy(y_pred_prob, len(y_pred_prob))
     hcs = eni[eni[:, 1] < delta]
-    return hcs[:, 3].astype(int), hcs[:, 0].astype(int)
+    return hcs[:, 2].astype(int), hcs[:, 0].astype(int)
 
 
 def get_uncertain_samples(y_pred_prob, n_samples, criteria='least_confidence'):
@@ -149,7 +141,7 @@ def run_ceal(args):
             dtrain_x = np.concatenate((DL[0], DH[0]))
             dtrain_y = np.concatenate((DL[1], DH[1]))
             model.fit(dtrain_x, dtrain_y, validation_data=(x_test, y_test), batch_size=args.batch_size,
-                      shuffle=True, epochs=args.epochs, verbose=args.verbose, callbacks=[earlystop])
+                      shuffle=False, epochs=args.epochs, verbose=args.verbose, callbacks=[earlystop])
             args.delta -= (args.threshold_decay * args.fine_tunning_interval)
 
         _, acc = model.evaluate(x_test, y_test, batch_size=args.batch_size, verbose=args.verbose)
@@ -180,7 +172,7 @@ if __name__ == '__main__':
                         help="High confidence samples selection threshold. default: 0.05")
     parser.add_argument('-K', '--uncertain_samples_size', default=2000, type=int,
                         help="Uncertain samples selection size. default: 2000")
-    parser.add_argument('-uc', '--uncertain_criteria', default='lc',
+    parser.add_argument('-uc', '--uncertain_criteria', default='ms',
                         help="Uncertain selection Criteria: \'lc\' (Least Confidence), \'ms\' (Margin Sampling), \'en\' (Entropy). default: lc")
     parser.add_argument('-ce', '--cost_effective', default=True,
                         help="whether to use Cost Effective high confidence sample pseudo-labeling. default: True")
