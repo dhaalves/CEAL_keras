@@ -5,12 +5,12 @@ import numpy as np
 from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
 from keras.datasets import cifar10
 from keras.models import load_model
-from keras.preprocessing.image import ImageDataGenerator
 from keras.utils import np_utils
 from keras_contrib.applications.resnet import ResNet18
+from sklearn.model_selection import train_test_split
 
 
-def initialization():
+def initialize_dataset():
     (x_train, y_train), (x_test, y_test) = cifar10.load_data()
 
     n_classes = np.max(y_test) + 1
@@ -28,24 +28,30 @@ def initialization():
     x_train /= 128.
     x_test /= 128.
 
-    datagen = ImageDataGenerator()
     initial_train_size = int(x_train.shape[0] * args.initial_annotated_perc)
+    x_pool, x_initial, y_pool, y_initial = train_test_split(x_train, y_train, test_size=initial_train_size,
+                                                            random_state=1, stratify=y_train)
 
-    x_train_initial, y_train_initial = iter(
-        datagen.flow(x_train, y_train, batch_size=initial_train_size, shuffle=True)).next()
+    return x_pool, y_pool, x_initial, y_initial, x_test, y_test, n_classes
 
+
+def initialize_model(x_initial, y_initial, x_test, y_test, n_classes):
     if os.path.exists(args.chkt_filename):
         model = load_model(args.chkt_filename)
     else:
-        model = ResNet18((x_train[-1,].shape), n_classes)
+        model = ResNet18((x_initial[-1,].shape), n_classes)
         model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['acc'])
-        model.fit(x_train_initial, y_train_initial, validation_data=(x_test, y_test), batch_size=args.batch_size,
-                  epochs=args.epochs, verbose=args.verbose, callbacks=[checkpoint])
+        model.fit(x_initial, y_initial, validation_data=(x_test, y_test), batch_size=args.batch_size,
+                  shuffle=True, epochs=args.epochs, verbose=args.verbose, callbacks=[checkpoint])
 
     scores = model.evaluate(x_test, y_test, batch_size=args.batch_size, verbose=args.verbose)
     print('Initial Test Loss: ', scores[0], ' Initial Test Accuracy: ', scores[1])
+    return model
 
-    return model, x_train, y_train, x_test, y_test, n_classes
+
+# Random sampling
+def random_sampling(y_pred_prob, n_samples):
+    return np.random.choice(range(len(y_pred_prob)), n_samples)
 
 
 # Rank all the unlabeled samples in an ascending order according to the least confidence
@@ -61,7 +67,6 @@ def least_confidence(y_pred_prob, n_samples):
     return lci[:n_samples], lci[:, 0].astype(int)[:n_samples]
 
 
-# TODO finish implementation
 # Rank all the unlabeled samples in an ascending order according to the margin sampling
 def margin_sampling(y_pred_prob, n_samples):
     origin_index = np.arange(0, len(y_pred_prob))
@@ -89,10 +94,11 @@ def entropy(y_pred_prob, n_samples):
     return eni[:n_samples], eni[:, 0].astype(int)[:n_samples]
 
 
+
 def get_high_confidence_samples(y_pred_prob, delta):
     eni, eni_idx = entropy(y_pred_prob, len(y_pred_prob))
     hcs = eni[eni[:, 1] < delta]
-    return hcs[:, 2].astype(int), hcs[:, 0].astype(int)
+    return hcs[:, 0].astype(int), hcs[:, 2].astype(int)
 
 
 def get_uncertain_samples(y_pred_prob, n_samples, criteria='least_confidence'):
@@ -102,21 +108,25 @@ def get_uncertain_samples(y_pred_prob, n_samples, criteria='least_confidence'):
         return margin_sampling(y_pred_prob, n_samples)
     elif criteria == 'en':
         return entropy(y_pred_prob, n_samples)
+    elif criteria == 'rs':
+        return None, random_sampling(y_pred_prob, n_samples)
     else:
         raise ValueError(
-            'Unknown criteria value \'%s\', use one of [\'lc\',\'ms\',\'en\']' % criteria)
+            'Unknown criteria value \'%s\', use one of [\'rs\',\'lc\',\'ms\',\'en\']' % criteria)
 
 
 def run_ceal(args):
-    # TODO exclude samples from initial train
-    model, x_train, y_train, x_test, y_test, n_classes = initialization()
-    w, h, c = x_train[-1,].shape
+    x_pool, y_pool, x_initial, y_initial, x_test, y_test, n_classes = initialize_dataset()
+
+    model = initialize_model(x_initial, y_initial, x_test, y_test, n_classes)
+
+    w, h, c = x_pool[-1,].shape
 
     # unlabeled samples
-    DU = x_train, y_train
+    DU = x_pool, y_pool
 
     # initially labeled samples
-    DL = np.empty((0, w, h, c)), np.empty((0, n_classes))
+    DL = x_initial, y_initial  # np.empty((0, w, h, c)), np.empty((0, n_classes))
 
     # high confidence samples
     DH = np.empty((0, w, h, c)), np.empty((0, n_classes))
@@ -130,10 +140,11 @@ def run_ceal(args):
              np.append(DL[1], np.take(DU[1], un_idx, axis=0), axis=0)
 
         if args.cost_effective:
-            hc_labels, hc_idx = get_high_confidence_samples(y_pred_prob, args.delta)
-            hc_idx = [i for i in hc_idx if i not in un_idx]
-            hc_labels = np_utils.to_categorical(hc_labels, n_classes)
-            DH = np.take(DU[0], hc_idx, axis=0), hc_labels
+            hc_idx, hc_labels = get_high_confidence_samples(y_pred_prob, args.delta)
+            # remove samples also selected through uncertain
+            hc = np.array([[i, l] for i, l in zip(hc_idx, hc_labels) if i not in un_idx])
+            if hc.size != 0:
+                DH = np.take(DU[0], hc[:, 0], axis=0), np_utils.to_categorical(hc[:, 1], n_classes)
 
         DU = np.delete(DU[0], un_idx, axis=0), np.delete(DU[1], un_idx, axis=0)
 
@@ -141,14 +152,14 @@ def run_ceal(args):
             dtrain_x = np.concatenate((DL[0], DH[0]))
             dtrain_y = np.concatenate((DL[1], DH[1]))
             model.fit(dtrain_x, dtrain_y, validation_data=(x_test, y_test), batch_size=args.batch_size,
-                      shuffle=False, epochs=args.epochs, verbose=args.verbose, callbacks=[earlystop])
+                      shuffle=True, epochs=args.epochs, verbose=args.verbose, callbacks=[earlystop])
             args.delta -= (args.threshold_decay * args.fine_tunning_interval)
 
         _, acc = model.evaluate(x_test, y_test, batch_size=args.batch_size, verbose=args.verbose)
 
         print(
             'Iteration: %d; High Confidence Samples: %d; Uncertain Samples: %d; Delta: %.5f; Labeled Dataset Size: %d; Accuracy: %.2f'
-            % (i, len(hc_idx), len(un_idx), args.delta, len(DL[0]), acc))
+            % (i, len(DH[0]), len(DL[0]), args.delta, len(DL[0]), acc))
 
 
 if __name__ == '__main__':
@@ -162,7 +173,7 @@ if __name__ == '__main__':
     parser.add_argument('-chkt_filename', default="ResNet18v2-CIFAR-10_init_ceal.hdf5",
                         help="Model Checkpoint filename to save")
     parser.add_argument('-t', '--fine_tunning_interval', default=1, type=int, help="Fine-tuning interval. default: 1")
-    parser.add_argument('-T', '--maximum_iterations', default=10, type=int,
+    parser.add_argument('-T', '--maximum_iterations', default=45, type=int,
                         help="Maximum iteration number. default: 10")
     parser.add_argument('-i', '--initial_annotated_perc', default=0.1, type=float,
                         help="Initial Annotated Samples Percentage. default: 0.1")
@@ -170,10 +181,10 @@ if __name__ == '__main__':
                         help="Threshold decay rate. default: 0.0033")
     parser.add_argument('-delta', default=0.05, type=float,
                         help="High confidence samples selection threshold. default: 0.05")
-    parser.add_argument('-K', '--uncertain_samples_size', default=2000, type=int,
+    parser.add_argument('-K', '--uncertain_samples_size', default=1000, type=int,
                         help="Uncertain samples selection size. default: 2000")
-    parser.add_argument('-uc', '--uncertain_criteria', default='ms',
-                        help="Uncertain selection Criteria: \'lc\' (Least Confidence), \'ms\' (Margin Sampling), \'en\' (Entropy). default: lc")
+    parser.add_argument('-uc', '--uncertain_criteria', default='lc',
+                        help="Uncertain selection Criteria: \'rs\'(Random Sampling), \'lc\'(Least Confidence), \'ms\'(Margin Sampling), \'en\'(Entropy). default: lc")
     parser.add_argument('-ce', '--cost_effective', default=True,
                         help="whether to use Cost Effective high confidence sample pseudo-labeling. default: True")
     args = parser.parse_args()
