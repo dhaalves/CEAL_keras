@@ -94,14 +94,13 @@ def entropy(y_pred_prob, n_samples):
     return eni[:n_samples], eni[:, 0].astype(int)[:n_samples]
 
 
-
 def get_high_confidence_samples(y_pred_prob, delta):
     eni, eni_idx = entropy(y_pred_prob, len(y_pred_prob))
     hcs = eni[eni[:, 1] < delta]
     return hcs[:, 0].astype(int), hcs[:, 2].astype(int)
 
 
-def get_uncertain_samples(y_pred_prob, n_samples, criteria='least_confidence'):
+def get_uncertain_samples(y_pred_prob, n_samples, criteria):
     if criteria == 'lc':
         return least_confidence(y_pred_prob, n_samples)
     elif criteria == 'ms':
@@ -146,17 +145,18 @@ def run_ceal(args):
             if hc.size != 0:
                 DH = np.take(DU[0], hc[:, 0], axis=0), np_utils.to_categorical(hc[:, 1], n_classes)
 
-        DU = np.delete(DU[0], un_idx, axis=0), np.delete(DU[1], un_idx, axis=0)
-
         if i % args.fine_tunning_interval == 0:
-            dtrain_x = np.concatenate((DL[0], DH[0]))
-            dtrain_y = np.concatenate((DL[1], DH[1]))
+            dtrain_x = np.concatenate((DL[0], DH[0])) if DH[0].size != 0 else DL[0]
+            dtrain_y = np.concatenate((DL[1], DH[1])) if DH[1].size != 0 else DL[1]
+
             model.fit(dtrain_x, dtrain_y, validation_data=(x_test, y_test), batch_size=args.batch_size,
                       shuffle=True, epochs=args.epochs, verbose=args.verbose, callbacks=[earlystop])
             args.delta -= (args.threshold_decay * args.fine_tunning_interval)
 
-        _, acc = model.evaluate(x_test, y_test, batch_size=args.batch_size, verbose=args.verbose)
+        DU = np.delete(DU[0], un_idx, axis=0), np.delete(DU[1], un_idx, axis=0)
+        DH = np.empty((0, w, h, c)), np.empty((0, n_classes))
 
+        _, acc = model.evaluate(x_test, y_test, batch_size=args.batch_size, verbose=args.verbose)
         print(
             'Iteration: %d; High Confidence Samples: %d; Uncertain Samples: %d; Delta: %.5f; Labeled Dataset Size: %d; Accuracy: %.2f'
             % (i, len(DH[0]), len(DL[0]), args.delta, len(DL[0]), acc))
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     parser.add_argument('-delta', default=0.05, type=float,
                         help="High confidence samples selection threshold. default: 0.05")
     parser.add_argument('-K', '--uncertain_samples_size', default=1000, type=int,
-                        help="Uncertain samples selection size. default: 2000")
+                        help="Uncertain samples selection size. default: 1000")
     parser.add_argument('-uc', '--uncertain_criteria', default='lc',
                         help="Uncertain selection Criteria: \'rs\'(Random Sampling), \'lc\'(Least Confidence), \'ms\'(Margin Sampling), \'en\'(Entropy). default: lc")
     parser.add_argument('-ce', '--cost_effective', default=True,
